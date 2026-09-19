@@ -67,7 +67,7 @@ To run it against a spring-kafka you built yourself — which is how the `main` 
 ./gradlew test -PspringKafkaVersion=4.2.0-SNAPSHOT
 ```
 
-Three tests, differing in one line each:
+Four tests, differing only in what the container is holding when the revoke is processed:
 
 | Test | State when the revoke is processed | Result |
 |---|---|---|
