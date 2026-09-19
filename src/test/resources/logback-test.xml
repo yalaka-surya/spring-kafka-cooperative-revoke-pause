@@ -1,0 +1,19 @@
+<configuration>
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+    <!--
+      The container logs its pause/resume decisions at DEBUG and nothing else; raise
+      KafkaMessageListenerContainer to DEBUG to watch the freeze happen:
+
+        "Pausing for incomplete async acks: {cooperative.revoke-0=[0, 1, 2]}"
+        "Paused consumption from: [cooperative.revoke-0, cooperative.revoke-1]"
+        ... and then nothing at all.
+    -->
+    <logger name="org.springframework.kafka.listener" level="INFO"/>
+    <root level="WARN">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>
