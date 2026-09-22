@@ -92,7 +92,10 @@ class CooperativeRevokePauseTest {
 	/** The partition this member keeps across the rebalance. This is the one that freezes. */
 	private static final TopicPartition RETAINED = new TopicPartition(TOPIC, 1);
 
-	private static final int BATCH = 3;
+	private static final int BATCH = 1;
+
+	/** max.poll.records for both the container's config and the mock broker. */
+	private static final int MAX_POLL_RECORDS = 1;
 
 	private static final Duration SETTLE = Duration.ofSeconds(15);
 
@@ -124,7 +127,7 @@ class CooperativeRevokePauseTest {
 					assertThat(harness.deliveredOffsets(RETAINED))
 							.describedAs("offsets delivered from the retained partition %s%n%s",
 									RETAINED, harness.diagnostics())
-							.containsExactly(0L, 1L, 2L));
+							.containsExactlyElementsOf(offsets(BATCH)));
 		}
 	}
 
@@ -151,7 +154,37 @@ class CooperativeRevokePauseTest {
 					assertThat(harness.deliveredOffsets(RETAINED))
 							.describedAs("offsets delivered from the retained partition %s%n%s",
 									RETAINED, harness.diagnostics())
-							.containsExactly(0L, 1L, 2L, 3L, 4L, 5L));
+							.containsExactlyElementsOf(offsets(2 * BATCH)));
+		}
+	}
+
+	@Test
+	@DisplayName("max.poll.records=1 does not avoid it: one unacknowledged record is enough")
+	void retainedPartitionKeepsBeingConsumedWithMaxPollRecordsOfOne() {
+		try (Harness harness = Harness.started(Harness.ASYNC_LISTENER, 1)) {
+			// One record per poll means the in-flight batch can only ever come from a single
+			// partition, so the situation the first test sets up deliberately is the only one this
+			// setting can produce. Throttling the poll does not narrow the window - it removes the
+			// batch spread that makes the control below pass.
+			harness.assignBothAndDeliver(MOVED);
+			harness.awaitDeliveries(1);
+			assertThat(harness.deliveredOffsets(MOVED))
+					.describedAs("the container pauses the whole assignment after one unacknowledged record")
+					.containsExactly(0L);
+
+			harness.awaitPaused(MOVED, RETAINED);
+			harness.rebalanceTo(RETAINED);
+			harness.acknowledgeEverythingInFlight();
+			harness.produce(RETAINED, BATCH);
+
+			// Only the first record is expected: with max.poll.records=1 and nothing acknowledging,
+			// the container pauses again immediately after it. Delivering it at all is what the
+			// freeze prevents.
+			await().atMost(SETTLE).untilAsserted(() ->
+					assertThat(harness.deliveredOffsets(RETAINED))
+							.describedAs("offsets delivered from the retained partition %s%n%s",
+									RETAINED, harness.diagnostics())
+							.containsExactly(0L));
 		}
 	}
 
@@ -174,7 +207,7 @@ class CooperativeRevokePauseTest {
 					assertThat(harness.deliveredOffsets(RETAINED))
 							.describedAs("offsets delivered from the retained partition %s%n%s",
 									RETAINED, harness.diagnostics())
-							.containsExactly(0L, 1L, 2L, 3L, 4L, 5L));
+							.containsExactlyElementsOf(offsets(2 * BATCH)));
 		}
 	}
 
@@ -194,8 +227,13 @@ class CooperativeRevokePauseTest {
 					assertThat(harness.deliveredOffsets(RETAINED))
 							.describedAs("offsets delivered from the retained partition %s%n%s",
 									RETAINED, harness.diagnostics())
-							.containsExactly(0L, 1L, 2L));
+							.containsExactlyElementsOf(offsets(BATCH)));
 		}
+	}
+
+	/** The offsets a partition that received {@code count} records should have delivered. */
+	private static List<Long> offsets(int count) {
+		return java.util.stream.LongStream.range(0, count).boxed().toList();
 	}
 
 	/**
@@ -220,6 +258,7 @@ class CooperativeRevokePauseTest {
 
 		private Harness(boolean asyncListener) {
 			this.consumer.updateBeginningOffsets(Map.of(MOVED, 0L, RETAINED, 0L));
+			this.consumer.setMaxPollRecords(MAX_POLL_RECORDS);
 			Object listener = asyncListener
 					? new AsyncReplyListener(this.deliveries)
 					: new PlainListener(this.deliveries);
@@ -227,7 +266,13 @@ class CooperativeRevokePauseTest {
 		}
 
 		static Harness started(boolean asyncListener) {
+			return started(asyncListener, Long.MAX_VALUE);
+		}
+
+		/** @param maxPollRecords what {@code max.poll.records} would be on a real consumer. */
+		static Harness started(boolean asyncListener, long maxPollRecords) {
 			Harness harness = new Harness(asyncListener);
+			harness.consumer.setMaxPollRecords(maxPollRecords);
 			harness.container.start();
 			return harness;
 		}
@@ -378,7 +423,8 @@ class CooperativeRevokePauseTest {
 				ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "mock:9092",
 				ConsumerConfig.GROUP_ID_CONFIG, GROUP,
 				ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
-				ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+				ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
+				ConsumerConfig.MAX_POLL_RECORDS_CONFIG, MAX_POLL_RECORDS);
 
 		DefaultKafkaConsumerFactory<String, String> consumerFactory =
 				new DefaultKafkaConsumerFactory<>(consumerConfig) {
